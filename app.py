@@ -9,12 +9,6 @@ from PIL import Image
 import time
 from pathlib import Path
 import timm
-import base64
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
-import av
-import threading
-import os
-import requests
 
 # ============================================
 # MODEL DEFINITION (Copy dari notebook mobile)
@@ -72,34 +66,7 @@ class MobileDrowsinessModel(nn.Module):
         return output
 
 
-# ============================================
-# AUDIO WARNING UTILITIES
-# ============================================
-def autoplay_audio(file_path):
-    """
-    Auto-play audio file using HTML5 audio tag
-    """
-    with open(file_path, "rb") as f:
-        data = f.read()
-        b64 = base64.b64encode(data).decode()
-        audio_html = f"""
-            <audio autoplay>
-                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-            </audio>
-        """
-        st.markdown(audio_html, unsafe_allow_html=True)
 
-
-def play_warning_sound(audio_path=None, warning_type="yawning"):
-    """
-    Play warning sound based on detection
-    """
-    if audio_path and Path(audio_path).exists():
-        # Custom audio
-        autoplay_audio(audio_path)
-    else:
-        # Default beep (jika tidak ada audio)
-        st.warning(f"🔔 Audio warning aktif: {warning_type}")
 
 
 # ============================================
@@ -206,75 +173,6 @@ class StreamlitInferencePipeline:
 
 
 # ============================================
-# VIDEO PROCESSOR FOR WEBRTC
-# ============================================
-class VideoProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.pipeline = None
-        self.enable_audio = False
-        self.yawning_audio = None
-        self.microsleep_audio = None
-        self.last_warning_time = 0
-        self.warning_cooldown = 2  # seconds
-        
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        
-        if self.pipeline is None or not self.pipeline.model_loaded:
-            # Draw "Model not loaded" message
-            cv2.putText(img, "Model not loaded", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-        
-        # Predict
-        prediction, confidence, probabilities = self.pipeline.predict(img)
-        
-        if prediction is not None:
-            # Get color based on prediction
-            color_map = {
-                'Focus': (0, 255, 0),      # Green
-                'Talking': (255, 0, 0),     # Blue
-                'Yawning': (0, 255, 255),   # Yellow
-                'Microsleep': (0, 0, 255)   # Red
-            }
-            color = color_map.get(prediction, (255, 255, 255))
-            
-            # Draw prediction on frame
-            text = f"{prediction}: {confidence*100:.1f}%"
-            cv2.putText(img, text, (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-            
-            # Draw warning if drowsy
-            if prediction in ['Yawning', 'Microsleep']:
-                warning_text = "WARNING: DROWSINESS DETECTED!"
-                cv2.putText(img, warning_text, (10, 70), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                
-                # Audio warning (with cooldown)
-                current_time = time.time()
-                if self.enable_audio and (current_time - self.last_warning_time > self.warning_cooldown):
-                    self.last_warning_time = current_time
-            
-            # Draw probabilities bar
-            y_offset = 100
-            for i, (class_name, prob) in enumerate(zip(self.pipeline.class_names, probabilities)):
-                bar_length = int(prob * 200)
-                bar_color = color_map.get(class_name, (255, 255, 255))
-                
-                # Draw bar background
-                cv2.rectangle(img, (10, y_offset + i*30), (210, y_offset + i*30 + 20), 
-                             (50, 50, 50), -1)
-                # Draw probability bar
-                cv2.rectangle(img, (10, y_offset + i*30), (10 + bar_length, y_offset + i*30 + 20), 
-                             bar_color, -1)
-                # Draw text
-                cv2.putText(img, f"{class_name[:4]}: {prob*100:.0f}%", (10, y_offset + i*30 + 15), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-
-# ============================================
 # STREAMLIT APP
 # ============================================
 def main():
@@ -327,102 +225,187 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ℹ️ Panduan")
     st.sidebar.markdown("""
-    1. Klik **"START"** untuk memulai webcam
-    2. Izinkan akses kamera browser
+    1. Pilih kamera dari dropdown
+    2. Klik **"Start Detection"** 
     3. Posisikan wajah di depan kamera
-    4. Prediksi akan berjalan otomatis
-    5. Klik **"STOP"** untuk berhenti
+    4. Prediksi berjalan otomatis setiap 8 frame
+    5. Klik **"Stop Detection"** untuk berhenti
     """)
     
     # ============================================
-    # REAL-TIME WEBCAM STREAMING
+    # REAL-TIME WEBCAM DETECTION (OpenCV Based)
     # ============================================
     st.header("📹 Deteksi Kantuk Real-Time")
     
     st.info("💡 **Pastikan wajah Anda terlihat jelas di kamera untuk hasil terbaik**")
     
-    # Warning for cloud deployment
-    st.warning("""
-    ⚠️ **Catatan Penting:**
-    - Jika webcam tidak berfungsi di cloud, ini adalah keterbatasan WebRTC di Streamlit Cloud
-    - **Solusi Terbaik:** Jalankan aplikasi secara **lokal** dengan: `streamlit run app.py`
-    - Atau gunakan browser yang support WebRTC penuh (Chrome/Firefox recommended)
-    """)
-    
-    # Get ICE servers configuration
-    def get_ice_servers():
-        """
-        Get ICE servers configuration for WebRTC.
-        Try Twilio first (best for Streamlit Cloud), fallback to free options.
-        """
-        # Try Twilio TURN server (recommended for Streamlit Community Cloud)
-        # Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Streamlit secrets or environment
-        try:
-            twilio_account_sid = os.environ.get("TWILIO_ACCOUNT_SID") or st.secrets.get("TWILIO_ACCOUNT_SID")
-            twilio_auth_token = os.environ.get("TWILIO_AUTH_TOKEN") or st.secrets.get("TWILIO_AUTH_TOKEN")
-        except Exception:
-            twilio_account_sid = None
-            twilio_auth_token = None
-        
-        if twilio_account_sid and twilio_auth_token:
-            try:
-                # Get ICE servers from Twilio
-                url = f"https://api.twilio.com/2010-04-01/Accounts/{twilio_account_sid}/Tokens.json"
-                response = requests.post(url, auth=(twilio_account_sid, twilio_auth_token))
-                
-                if response.status_code == 201:
-                    token = response.json()
-                    ice_servers = token.get("ice_servers", [])
-                    st.sidebar.success("✅ Using Twilio TURN server")
-                    return ice_servers
-            except Exception as e:
-                st.sidebar.warning(f"⚠️ Twilio TURN setup failed: {str(e)}")
-        
-        # Fallback to free STUN/TURN servers
-        st.sidebar.info("ℹ️ Using free STUN/TURN servers")
-        return [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {
-                "urls": ["turn:openrelay.metered.ca:80"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            },
-            {
-                "urls": ["turn:openrelay.metered.ca:443"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            },
-            {
-                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            }
-        ]
-    
-    # WebRTC Configuration
-    rtc_configuration = RTCConfiguration({"iceServers": get_ice_servers()})
-    
-    # Create video processor factory with pipeline reference
-    pipeline = st.session_state.pipeline  # Get pipeline before creating factory
-    
-    class VideoProcessorFactory:
-        def __init__(self, pipeline_ref):
-            self.pipeline_ref = pipeline_ref
-            self.processor = None
-        
-        def create(self):
-            self.processor = VideoProcessor()
-            self.processor.pipeline = self.pipeline_ref
-            return self.processor
-    
-    # WebRTC Streamer
-    webrtc_ctx = webrtc_streamer(
-        key="drowsiness-detection",
-        video_processor_factory=VideoProcessorFactory(pipeline).create,
-        rtc_configuration=rtc_configuration,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
+    # Camera selection
+    camera_index = st.sidebar.selectbox(
+        "Pilih Kamera",
+        options=[0, 1, 2],
+        format_func=lambda x: f"Camera {x}",
+        help="Biasanya 0 = webcam laptop, 1 = external camera"
     )
+    
+    # Frame skip configuration
+    frame_skip = st.sidebar.slider(
+        "Process Every N Frames",
+        min_value=1,
+        max_value=10,
+        value=3,
+        help="Process setiap N frame (lebih besar = lebih cepat tapi kurang smooth)"
+    )
+    
+    # Control buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        start_button = st.button("🎬 Start Detection", type="primary", use_container_width=True)
+    with col2:
+        stop_button = st.button("⏹️ Stop Detection", use_container_width=True)
+    
+    # Initialize session state
+    if 'running' not in st.session_state:
+        st.session_state.running = False
+    if 'frame_count' not in st.session_state:
+        st.session_state.frame_count = 0
+    
+    if start_button:
+        st.session_state.running = True
+        st.session_state.frame_count = 0
+        st.session_state.pipeline.reset()
+    
+    if stop_button:
+        st.session_state.running = False
+    
+    # Video detection loop
+    if st.session_state.running:
+        # Create placeholders
+        video_placeholder = st.empty()
+        status_placeholder = st.empty()
+        
+        # Metric placeholders
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            metric_focus = st.empty()
+        with col2:
+            metric_talking = st.empty()
+        with col3:
+            metric_yawning = st.empty()
+        with col4:
+            metric_microsleep = st.empty()
+        
+        alert_placeholder = st.empty()
+        
+        # Open webcam
+        cap = cv2.VideoCapture(camera_index)
+        
+        if not cap.isOpened():
+            st.error(f"❌ Tidak dapat membuka kamera {camera_index}. Coba pilih kamera lain.")
+            st.session_state.running = False
+        else:
+            st.success(f"✅ Kamera {camera_index} berhasil dibuka")
+            
+            frame_counter = 0
+            last_prediction = None
+            last_confidence = 0
+            last_probabilities = None
+            
+            while st.session_state.running:
+                ret, frame = cap.read()
+                
+                if not ret:
+                    st.error("❌ Gagal membaca frame dari kamera")
+                    break
+                
+                frame_counter += 1
+                st.session_state.frame_count = frame_counter
+                
+                # Process every N frames
+                if frame_counter % frame_skip == 0:
+                    # Predict
+                    prediction, confidence, probabilities = st.session_state.pipeline.predict(frame)
+                    
+                    if prediction is not None:
+                        last_prediction = prediction
+                        last_confidence = confidence
+                        last_probabilities = probabilities
+                
+                # Draw on frame
+                if last_prediction is not None:
+                    # Color mapping
+                    color_map = {
+                        'Focus': (0, 255, 0),
+                        'Talking': (255, 0, 0),
+                        'Yawning': (0, 255, 255),
+                        'Microsleep': (0, 0, 255)
+                    }
+                    color = color_map.get(last_prediction, (255, 255, 255))
+                    
+                    # Draw prediction
+                    text = f"{last_prediction}: {last_confidence*100:.1f}%"
+                    cv2.putText(frame, text, (10, 40), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+                    
+                    # Draw warning
+                    if last_prediction in ['Yawning', 'Microsleep']:
+                        warning_text = "WARNING: DROWSINESS!"
+                        cv2.putText(frame, warning_text, (10, 90), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                        
+                        # Alert message
+                        if last_prediction == 'Yawning':
+                            alert_placeholder.warning("⚠️ **PERINGATAN!** Pengemudi mulai mengantuk (Yawning)")
+                        else:
+                            alert_placeholder.error("🚨 **BAHAYA!** Pengemudi terdeteksi Microsleep!")
+                    else:
+                        alert_placeholder.empty()
+                    
+                    # Draw probability bars
+                    if last_probabilities is not None:
+                        y_offset = 120
+                        for i, (class_name, prob) in enumerate(zip(st.session_state.pipeline.class_names, last_probabilities)):
+                            bar_length = int(prob * 300)
+                            bar_color = color_map.get(class_name, (255, 255, 255))
+                            
+                            # Background
+                            cv2.rectangle(frame, (10, y_offset + i*40), (310, y_offset + i*40 + 30), 
+                                         (50, 50, 50), -1)
+                            # Bar
+                            cv2.rectangle(frame, (10, y_offset + i*40), (10 + bar_length, y_offset + i*40 + 30), 
+                                         bar_color, -1)
+                            # Text
+                            cv2.putText(frame, f"{class_name}: {prob*100:.0f}%", 
+                                       (15, y_offset + i*40 + 22), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        
+                        # Update metrics
+                        metric_focus.metric("🟢 Focus", f"{last_probabilities[0]*100:.1f}%")
+                        metric_talking.metric("🔵 Talking", f"{last_probabilities[1]*100:.1f}%")
+                        metric_yawning.metric("🟡 Yawning", f"{last_probabilities[2]*100:.1f}%")
+                        metric_microsleep.metric("🔴 Microsleep", f"{last_probabilities[3]*100:.1f}%")
+                
+                # Frame info
+                cv2.putText(frame, f"Frame: {frame_counter}", (frame.shape[1] - 200, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                # Convert to RGB for display
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Display frame
+                video_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+                
+                # Status
+                status_placeholder.text(f"⚡ Processing... Frame {frame_counter} | Model buffer: {len(st.session_state.pipeline.frame_buffer)}/8")
+                
+                # Small delay to prevent overwhelming
+                time.sleep(0.01)
+            
+            # Release camera
+            cap.release()
+            st.info("⏹️ Detection stopped")
+    
+    elif not st.session_state.running and st.session_state.frame_count > 0:
+        st.info(f"📊 Session ended. Processed {st.session_state.frame_count} frames")
     
     # Statistics section
     st.markdown("---")

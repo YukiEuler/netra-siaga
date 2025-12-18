@@ -287,14 +287,27 @@ def main():
         
         alert_placeholder = st.empty()
         
-        # Open webcam with DirectShow backend (Windows)
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        # Try multiple backends for Windows camera
+        cap = None
+        backends_to_try = [
+            (cv2.CAP_MSMF, "Microsoft Media Foundation"),
+            (cv2.CAP_DSHOW, "DirectShow"),
+            (cv2.CAP_ANY, "Default")
+        ]
         
-        # If DirectShow fails, try default backend
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(0)
+        for backend, backend_name in backends_to_try:
+            try:
+                cap = cv2.VideoCapture(0, backend)
+                if cap.isOpened():
+                    st.sidebar.success(f"✅ Camera opened with {backend_name}")
+                    break
+                else:
+                    cap.release()
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ {backend_name} failed: {str(e)}")
+                continue
         
-        if not cap.isOpened():
+        if cap is None or not cap.isOpened():
             st.error("❌ Tidak dapat membuka kamera. Pastikan kamera terhubung dan tidak digunakan aplikasi lain.")
             st.session_state.running = False
         else:

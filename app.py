@@ -13,6 +13,8 @@ import base64
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 import threading
+import os
+import requests
 
 # ============================================
 # MODEL DEFINITION (Copy dari notebook mobile)
@@ -339,10 +341,66 @@ def main():
     
     st.info("💡 **Pastikan wajah Anda terlihat jelas di kamera untuk hasil terbaik**")
     
+    # Warning for cloud deployment
+    st.warning("""
+    ⚠️ **Catatan Penting:**
+    - Jika webcam tidak berfungsi di cloud, ini adalah keterbatasan WebRTC di Streamlit Cloud
+    - **Solusi Terbaik:** Jalankan aplikasi secara **lokal** dengan: `streamlit run app.py`
+    - Atau gunakan browser yang support WebRTC penuh (Chrome/Firefox recommended)
+    """)
+    
+    # Get ICE servers configuration
+    def get_ice_servers():
+        """
+        Get ICE servers configuration for WebRTC.
+        Try Twilio first (best for Streamlit Cloud), fallback to free options.
+        """
+        # Try Twilio TURN server (recommended for Streamlit Community Cloud)
+        # Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Streamlit secrets or environment
+        try:
+            twilio_account_sid = os.environ.get("TWILIO_ACCOUNT_SID") or st.secrets.get("TWILIO_ACCOUNT_SID")
+            twilio_auth_token = os.environ.get("TWILIO_AUTH_TOKEN") or st.secrets.get("TWILIO_AUTH_TOKEN")
+        except Exception:
+            twilio_account_sid = None
+            twilio_auth_token = None
+        
+        if twilio_account_sid and twilio_auth_token:
+            try:
+                # Get ICE servers from Twilio
+                url = f"https://api.twilio.com/2010-04-01/Accounts/{twilio_account_sid}/Tokens.json"
+                response = requests.post(url, auth=(twilio_account_sid, twilio_auth_token))
+                
+                if response.status_code == 201:
+                    token = response.json()
+                    ice_servers = token.get("ice_servers", [])
+                    st.sidebar.success("✅ Using Twilio TURN server")
+                    return ice_servers
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ Twilio TURN setup failed: {str(e)}")
+        
+        # Fallback to free STUN/TURN servers
+        st.sidebar.info("ℹ️ Using free STUN/TURN servers")
+        return [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {
+                "urls": ["turn:openrelay.metered.ca:80"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            }
+        ]
+    
     # WebRTC Configuration
-    rtc_configuration = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
+    rtc_configuration = RTCConfiguration({"iceServers": get_ice_servers()})
     
     # Create video processor factory with pipeline reference
     pipeline = st.session_state.pipeline  # Get pipeline before creating factory

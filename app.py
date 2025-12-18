@@ -225,11 +225,10 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ℹ️ Panduan")
     st.sidebar.markdown("""
-    1. Pilih kamera dari dropdown
-    2. Klik **"Start Detection"** 
-    3. Posisikan wajah di depan kamera
-    4. Prediksi berjalan otomatis setiap 8 frame
-    5. Klik **"Stop Detection"** untuk berhenti
+    1. Klik **"Start Detection"** 
+    2. Posisikan wajah di depan kamera
+    3. Prediksi berjalan otomatis setiap 8 frame
+    4. Klik **"Stop Detection"** untuk berhenti
     """)
     
     # ============================================
@@ -238,14 +237,6 @@ def main():
     st.header("📹 Deteksi Kantuk Real-Time")
     
     st.info("💡 **Pastikan wajah Anda terlihat jelas di kamera untuk hasil terbaik**")
-    
-    # Camera selection
-    camera_index = st.sidebar.selectbox(
-        "Pilih Kamera",
-        options=[0, 1, 2],
-        format_func=lambda x: f"Camera {x}",
-        help="Biasanya 0 = webcam laptop, 1 = external camera"
-    )
     
     # Frame skip configuration
     frame_skip = st.sidebar.slider(
@@ -296,14 +287,14 @@ def main():
         
         alert_placeholder = st.empty()
         
-        # Open webcam
-        cap = cv2.VideoCapture(camera_index)
+        # Open webcam (default camera)
+        cap = cv2.VideoCapture(0)
         
         if not cap.isOpened():
-            st.error(f"❌ Tidak dapat membuka kamera {camera_index}. Coba pilih kamera lain.")
+            st.error("❌ Tidak dapat membuka kamera. Pastikan kamera terhubung dan tidak digunakan aplikasi lain.")
             st.session_state.running = False
         else:
-            st.success(f"✅ Kamera {camera_index} berhasil dibuka")
+            st.success("✅ Kamera berhasil dibuka")
             
             frame_counter = 0
             last_prediction = None

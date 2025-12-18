@@ -287,13 +287,21 @@ def main():
         
         alert_placeholder = st.empty()
         
-        # Open webcam (default camera)
-        cap = cv2.VideoCapture(0)
+        # Open webcam with DirectShow backend (Windows)
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        
+        # If DirectShow fails, try default backend
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(0)
         
         if not cap.isOpened():
             st.error("❌ Tidak dapat membuka kamera. Pastikan kamera terhubung dan tidak digunakan aplikasi lain.")
             st.session_state.running = False
         else:
+            # Set camera properties for better performance
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
             st.success("✅ Kamera berhasil dibuka")
             
             frame_counter = 0

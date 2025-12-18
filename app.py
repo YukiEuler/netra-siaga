@@ -344,23 +344,23 @@ def main():
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
     
-    # Create video processor
+    # Create video processor factory with pipeline reference
+    pipeline = st.session_state.pipeline  # Get pipeline before creating factory
+    
     class VideoProcessorFactory:
-        def __init__(self):
+        def __init__(self, pipeline_ref):
+            self.pipeline_ref = pipeline_ref
             self.processor = None
         
         def create(self):
             self.processor = VideoProcessor()
-            self.processor.pipeline = st.session_state.pipeline
+            self.processor.pipeline = self.pipeline_ref
             return self.processor
-    
-    if 'video_processor_factory' not in st.session_state:
-        st.session_state.video_processor_factory = VideoProcessorFactory()
     
     # WebRTC Streamer
     webrtc_ctx = webrtc_streamer(
         key="drowsiness-detection",
-        video_processor_factory=st.session_state.video_processor_factory.create,
+        video_processor_factory=VideoProcessorFactory(pipeline).create,
         rtc_configuration=rtc_configuration,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,

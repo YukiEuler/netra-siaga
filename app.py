@@ -110,7 +110,7 @@ class StreamlitInferencePipeline:
         # Load model
         self.model = MobileDrowsinessModel(num_classes=4, num_frames=num_frames)
         if Path(model_path).exists():
-            self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            self.model.load_state_dict(torch.load(model_path, map_location='cpu', weight_only=False))
             self.model.eval()
             self.model_loaded = True
         else:

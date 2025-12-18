@@ -110,7 +110,19 @@ class StreamlitInferencePipeline:
         # Load model
         self.model = MobileDrowsinessModel(num_classes=4, num_frames=num_frames)
         if Path(model_path).exists():
-            self.model.load_state_dict(torch.load(model_path, map_location='cpu', weights_only=False))
+            # ✅ FIX: Load checkpoint yang berisi metadata
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+            
+            # Ekstrak model_state_dict dari checkpoint
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                # Format dari training notebook (dengan metadata)
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                print(f"✓ Loaded model from checkpoint (Fold {checkpoint.get('fold', 'N/A')}, F1: {checkpoint.get('best_f1', 0):.4f})")
+            else:
+                # Format langsung state_dict (fallback)
+                self.model.load_state_dict(checkpoint)
+                print("✓ Loaded model from direct state_dict")
+            
             self.model.eval()
             self.model_loaded = True
         else:
@@ -135,7 +147,7 @@ class StreamlitInferencePipeline:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-    
+        
     def preprocess_frame(self, frame):
         """Preprocess single frame"""
         # Convert BGR to RGB

@@ -6,11 +6,13 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from PIL import Image
-import tempfile
 import time
 from pathlib import Path
 import timm
 import base64
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+import av
+import threading
 
 # ============================================
 # MODEL DEFINITION (Copy dari notebook mobile)
@@ -147,7 +149,7 @@ class StreamlitInferencePipeline:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        
+
     def preprocess_frame(self, frame):
         """Preprocess single frame"""
         # Convert BGR to RGB
@@ -202,6 +204,75 @@ class StreamlitInferencePipeline:
 
 
 # ============================================
+# VIDEO PROCESSOR FOR WEBRTC
+# ============================================
+class VideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.pipeline = None
+        self.enable_audio = False
+        self.yawning_audio = None
+        self.microsleep_audio = None
+        self.last_warning_time = 0
+        self.warning_cooldown = 2  # seconds
+        
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        if self.pipeline is None or not self.pipeline.model_loaded:
+            # Draw "Model not loaded" message
+            cv2.putText(img, "Model not loaded", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+        
+        # Predict
+        prediction, confidence, probabilities = self.pipeline.predict(img)
+        
+        if prediction is not None:
+            # Get color based on prediction
+            color_map = {
+                'Focus': (0, 255, 0),      # Green
+                'Talking': (255, 0, 0),     # Blue
+                'Yawning': (0, 255, 255),   # Yellow
+                'Microsleep': (0, 0, 255)   # Red
+            }
+            color = color_map.get(prediction, (255, 255, 255))
+            
+            # Draw prediction on frame
+            text = f"{prediction}: {confidence*100:.1f}%"
+            cv2.putText(img, text, (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            
+            # Draw warning if drowsy
+            if prediction in ['Yawning', 'Microsleep']:
+                warning_text = "WARNING: DROWSINESS DETECTED!"
+                cv2.putText(img, warning_text, (10, 70), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                
+                # Audio warning (with cooldown)
+                current_time = time.time()
+                if self.enable_audio and (current_time - self.last_warning_time > self.warning_cooldown):
+                    self.last_warning_time = current_time
+            
+            # Draw probabilities bar
+            y_offset = 100
+            for i, (class_name, prob) in enumerate(zip(self.pipeline.class_names, probabilities)):
+                bar_length = int(prob * 200)
+                bar_color = color_map.get(class_name, (255, 255, 255))
+                
+                # Draw bar background
+                cv2.rectangle(img, (10, y_offset + i*30), (210, y_offset + i*30 + 20), 
+                             (50, 50, 50), -1)
+                # Draw probability bar
+                cv2.rectangle(img, (10, y_offset + i*30), (10 + bar_length, y_offset + i*30 + 20), 
+                             bar_color, -1)
+                # Draw text
+                cv2.putText(img, f"{class_name[:4]}: {prob*100:.0f}%", (10, y_offset + i*30 + 15), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+
+# ============================================
 # STREAMLIT APP
 # ============================================
 def main():
@@ -241,57 +312,6 @@ def main():
     
     st.sidebar.success("✅ Model berhasil dimuat!")
     
-    # ============================================
-    # AUDIO WARNING CONFIGURATION
-    # ============================================
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🔊 Konfigurasi Audio Warning")
-    
-    enable_audio = st.sidebar.checkbox("Aktifkan Audio Warning", value=True)
-    
-    # Upload custom audio files
-    yawning_audio = None
-    microsleep_audio = None
-    
-    if enable_audio:
-        st.sidebar.markdown("#### Upload Suara Custom (Opsional)")
-        
-        yawning_audio_file = st.sidebar.file_uploader(
-            "🟡 Audio untuk Yawning",
-            type=['mp3', 'wav', 'ogg'],
-            help="Format: MP3, WAV, OGG"
-        )
-        
-        microsleep_audio_file = st.sidebar.file_uploader(
-            "🔴 Audio untuk Microsleep",
-            type=['mp3', 'wav', 'ogg'],
-            help="Format: MP3, WAV, OGG"
-        )
-        
-        # Save uploaded audio files
-        if yawning_audio_file:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp:
-                tmp.write(yawning_audio_file.read())
-                yawning_audio = tmp.name
-                st.sidebar.success("✅ Audio Yawning uploaded!")
-        
-        if microsleep_audio_file:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp:
-                tmp.write(microsleep_audio_file.read())
-                microsleep_audio = tmp.name
-                st.sidebar.success("✅ Audio Microsleep uploaded!")
-        
-        # Store in session state
-        st.session_state.yawning_audio = yawning_audio
-        st.session_state.microsleep_audio = microsleep_audio
-        st.session_state.enable_audio = enable_audio
-    
-    # Mode selection
-    mode = st.sidebar.radio(
-        "Pilih Mode",
-        ["📸 Upload Gambar", "🎥 Upload Video", "📹 Webcam (Live)"]
-    )
-    
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📊 Informasi Model")
     st.sidebar.info(
@@ -302,216 +322,101 @@ def main():
         f"**Kelas:** 4 (Focus, Talking, Yawning, Microsleep)"
     )
     
-    # ============================================
-    # MODE 1: UPLOAD GAMBAR
-    # ============================================
-    if mode == "📸 Upload Gambar":
-        st.header("📸 Deteksi dari Gambar")
-        
-        uploaded_file = st.file_uploader(
-            "Upload gambar wajah pengemudi",
-            type=['jpg', 'jpeg', 'png'],
-            help="Format: JPG, JPEG, PNG"
-        )
-        
-        if uploaded_file is not None:
-            # Read image
-            image = Image.open(uploaded_file)
-            img_array = np.array(image)
-            
-            # Display original image
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Gambar Asli")
-                st.image(image, use_container_width=True)
-            
-            # Predict
-            st.session_state.pipeline.reset()
-            prediction, confidence, probabilities = st.session_state.pipeline.predict(img_array)
-            
-            with col2:
-                st.subheader("Hasil Prediksi")
-                
-                # Display prediction
-                icon = st.session_state.pipeline.class_colors[prediction]
-                st.markdown(f"## {icon} **{prediction}**")
-                st.markdown(f"**Confidence:** {confidence*100:.1f}%")
-                
-                # Progress bars
-                st.markdown("### Probabilitas per Kelas:")
-                for i, (class_name, prob) in enumerate(zip(st.session_state.pipeline.class_names, probabilities)):
-                    icon = st.session_state.pipeline.class_colors[class_name]
-                    st.progress(float(prob), text=f"{icon} {class_name}: {prob*100:.1f}%")
-            
-            # Alert & Audio Warning
-            if prediction == 'Yawning':
-                st.error(f"🚨 **PERINGATAN!** Pengemudi terdeteksi {prediction}!")
-                if enable_audio:
-                    play_warning_sound(st.session_state.get('yawning_audio'), "yawning")
-            elif prediction == 'Microsleep':
-                st.error(f"🚨 **BAHAYA!** Pengemudi terdeteksi {prediction}!")
-                if enable_audio:
-                    play_warning_sound(st.session_state.get('microsleep_audio'), "microsleep")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ℹ️ Panduan")
+    st.sidebar.markdown("""
+    1. Klik **"START"** untuk memulai webcam
+    2. Izinkan akses kamera browser
+    3. Posisikan wajah di depan kamera
+    4. Prediksi akan berjalan otomatis
+    5. Klik **"STOP"** untuk berhenti
+    """)
     
     # ============================================
-    # MODE 2: UPLOAD VIDEO
+    # REAL-TIME WEBCAM STREAMING
     # ============================================
-    elif mode == "🎥 Upload Video":
-        st.header("🎥 Deteksi dari Video")
-        
-        uploaded_video = st.file_uploader(
-            "Upload video wajah pengemudi",
-            type=['mp4', 'avi', 'mov'],
-            help="Format: MP4, AVI, MOV"
-        )
-        
-        if uploaded_video is not None:
-            # Save uploaded video
-            tfile = tempfile.NamedTemporaryFile(delete=False)
-            tfile.write(uploaded_video.read())
-            
-            # Process video
-            st.info("⏳ Memproses video...")
-            
-            cap = cv2.VideoCapture(tfile.name)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = int(cap.get(cv2.CAP_PROP_FPS))
-            
-            # Create placeholders
-            frame_placeholder = st.empty()
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            alert_placeholder = st.empty()
-            
-            # Results storage
-            predictions_list = []
-            warning_triggered = False
-            last_warning_frame = 0
-            
-            st.session_state.pipeline.reset()
-            frame_count = 0
-            
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                frame_count += 1
-                
-                # Predict every 5 frames (for speed)
-                if frame_count % 5 == 0:
-                    prediction, confidence, probabilities = st.session_state.pipeline.predict(frame)
-                    predictions_list.append({
-                        'frame': frame_count,
-                        'prediction': prediction,
-                        'confidence': confidence
-                    })
-                    
-                    # Draw on frame
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    icon = st.session_state.pipeline.class_colors[prediction]
-                    text = f"{icon} {prediction} ({confidence*100:.1f}%)"
-                    
-                    # Display frame
-                    frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
-                    
-                    # Update progress
-                    progress = frame_count / total_frames
-                    progress_bar.progress(progress)
-                    status_text.text(f"Frame {frame_count}/{total_frames} - {text}")
-                    
-                    # Trigger audio warning (cooldown 30 frames)
-                    if prediction in ['Yawning', 'Microsleep'] and (frame_count - last_warning_frame > 30):
-                        if prediction == 'Yawning':
-                            alert_placeholder.error("🚨 **PERINGATAN!** Pengemudi menguap!")
-                            if enable_audio:
-                                play_warning_sound(st.session_state.get('yawning_audio'), "yawning")
-                        else:
-                            alert_placeholder.error("🚨 **BAHAYA!** Pengemudi terdeteksi Microsleep!")
-                            if enable_audio:
-                                play_warning_sound(st.session_state.get('microsleep_audio'), "microsleep")
-                        
-                        last_warning_frame = frame_count
-                        time.sleep(0.5)  # Brief pause for audio
-            
-            cap.release()
-            
-            st.success(f"✅ Video selesai diproses! Total {len(predictions_list)} prediksi")
-            
-            # Summary
-            st.subheader("📊 Ringkasan Hasil")
-            import pandas as pd
-            df = pd.DataFrame(predictions_list)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total Frame", f"{frame_count}")
-            with col2:
-                most_common = df['prediction'].mode()[0]
-                st.metric("Kondisi Dominan", most_common)
-            with col3:
-                avg_conf = df['confidence'].mean()
-                st.metric("Rata-rata Confidence", f"{avg_conf*100:.1f}%")
-            with col4:
-                danger_count = len(df[df['prediction'].isin(['Yawning', 'Microsleep'])])
-                st.metric("⚠️ Warning Count", danger_count)
-            
-            # Distribution chart
-            st.bar_chart(df['prediction'].value_counts())
+    st.header("📹 Deteksi Kantuk Real-Time")
     
-    # ============================================
-    # MODE 3: WEBCAM
-    # ============================================
-    else:
-        st.header("📹 Deteksi Live dari Webcam")
+    st.info("💡 **Pastikan wajah Anda terlihat jelas di kamera untuk hasil terbaik**")
+    
+    # WebRTC Configuration
+    rtc_configuration = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+    
+    # Create video processor
+    class VideoProcessorFactory:
+        def __init__(self):
+            self.processor = None
         
-        st.warning("⚠️ Fitur webcam memerlukan akses kamera browser Anda")
-        
-        # Camera input
-        camera_image = st.camera_input("Ambil foto dari webcam")
-        
-        if camera_image is not None:
-            # Read image
-            image = Image.open(camera_image)
-            img_array = np.array(image)
-            
-            # Predict
-            st.session_state.pipeline.reset()
-            prediction, confidence, probabilities = st.session_state.pipeline.predict(img_array)
-            
-            # Display results
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                st.image(image, use_container_width=True)
-            
-            with col2:
-                icon = st.session_state.pipeline.class_colors[prediction]
-                st.markdown(f"## {icon} **{prediction}**")
-                st.markdown(f"**Confidence:** {confidence*100:.1f}%")
-                
-                st.markdown("### Probabilitas:")
-                for class_name, prob in zip(st.session_state.pipeline.class_names, probabilities):
-                    icon = st.session_state.pipeline.class_colors[class_name]
-                    st.progress(float(prob), text=f"{icon} {class_name}: {prob*100:.1f}%")
-            
-            # Alert & Audio Warning
-            if prediction == 'Yawning':
-                st.error(f"🚨 **PERINGATAN!** Pengemudi terdeteksi {prediction}!")
-                if enable_audio:
-                    play_warning_sound(st.session_state.get('yawning_audio'), "yawning")
-            elif prediction == 'Microsleep':
-                st.error(f"🚨 **BAHAYA!** Pengemudi terdeteksi {prediction}!")
-                if enable_audio:
-                    play_warning_sound(st.session_state.get('microsleep_audio'), "microsleep")
+        def create(self):
+            self.processor = VideoProcessor()
+            self.processor.pipeline = st.session_state.pipeline
+            return self.processor
+    
+    if 'video_processor_factory' not in st.session_state:
+        st.session_state.video_processor_factory = VideoProcessorFactory()
+    
+    # WebRTC Streamer
+    webrtc_ctx = webrtc_streamer(
+        key="drowsiness-detection",
+        video_processor_factory=st.session_state.video_processor_factory.create,
+        rtc_configuration=rtc_configuration,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    
+    # Statistics section
+    st.markdown("---")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### 🟢 Focus")
+        st.markdown("**Kondisi Normal**")
+        st.markdown("Pengemudi fokus pada jalan")
+    
+    with col2:
+        st.markdown("### 🟡 Yawning")
+        st.markdown("**⚠️ Peringatan**")
+        st.markdown("Pengemudi mulai mengantuk")
+    
+    with col3:
+        st.markdown("### 🔴 Microsleep")
+        st.markdown("**🚨 BAHAYA!**")
+        st.markdown("Segera berhenti dan istirahat!")
+    
+    # Tips section
+    st.markdown("---")
+    st.markdown("### 💡 Tips untuk Hasil Terbaik")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        **✅ Lakukan:**
+        - Posisikan wajah di tengah frame
+        - Pastikan pencahayaan cukup
+        - Hindari backlight (cahaya dari belakang)
+        - Jaga jarak 30-50 cm dari kamera
+        """)
+    
+    with col2:
+        st.markdown("""
+        **❌ Hindari:**
+        - Gerakan kepala terlalu cepat
+        - Pencahayaan terlalu gelap/terang
+        - Wajah tertutup masker/topi
+        - Background yang terlalu ramai
+        """)
     
     # Footer
     st.markdown("---")
     st.markdown(
         "<div style='text-align: center'>"
+        "<p>🚗 <b>NetraSiaga</b> - Sistem Deteksi Kantuk Pengemudi Berbasis AI</p>"
         "<p>Dibuat dengan ❤️ menggunakan Streamlit | Model: MobileNetV3 + LSTM</p>"
+        "<p><small>Untuk keamanan berkendara yang lebih baik</small></p>"
         "</div>",
         unsafe_allow_html=True
     )

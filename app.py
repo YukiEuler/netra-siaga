@@ -788,6 +788,15 @@ def main():
         
         st.markdown("### 📹 Live Camera Feed")
         
+        # Ensure session_state is ready before accessing
+        if 'pipeline' not in st.session_state or st.session_state.pipeline is None:
+            st.error("⚠️ Pipeline belum diinisialisasi. Silakan refresh halaman.")
+            st.stop()
+        
+        # Get values from session_state once to avoid repeated access
+        current_pipeline = st.session_state.pipeline
+        current_audio_bytes = st.session_state.get('alert_audio_bytes')
+        
         # Use functools.partial to bind arguments - this avoids session_state in worker thread
         webrtc_ctx = webrtc_streamer(
             key="drowsiness-detection",
@@ -795,8 +804,8 @@ def main():
             rtc_configuration=RTC_CONFIGURATION,
             video_processor_factory=partial(
                 VideoProcessor,
-                pipeline=st.session_state.pipeline,
-                alert_audio_bytes=st.session_state.get('alert_audio_bytes')
+                pipeline=current_pipeline,
+                alert_audio_bytes=current_audio_bytes
             ),
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,

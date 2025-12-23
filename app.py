@@ -787,20 +787,20 @@ def main():
         
         st.markdown("### 📹 Live Camera Feed")
         
-        # WebRTC streamer with inline processor class to avoid session_state issues
-        class DrowsinessVideoProcessor(VideoProcessor):
-            def __init__(self):
-                # Capture pipeline and audio at initialization time (in main thread)
-                super().__init__(
-                    pipeline=st.session_state.pipeline,
-                    alert_audio_bytes=st.session_state.get('alert_audio_bytes')
-                )
+        # Store pipeline and audio in module-level variables BEFORE webrtc_streamer
+        # This avoids session_state access in worker thread
+        _pipeline = st.session_state.pipeline
+        _alert_audio = st.session_state.get('alert_audio_bytes')
+        
+        # Factory function that uses captured variables (not session_state)
+        def create_video_processor():
+            return VideoProcessor(_pipeline, _alert_audio)
         
         webrtc_ctx = webrtc_streamer(
             key="drowsiness-detection",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=DrowsinessVideoProcessor,
+            video_processor_factory=create_video_processor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )

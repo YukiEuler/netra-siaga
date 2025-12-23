@@ -10,3 +10,4 @@ pandas==2.2.3
 ultralytics==8.2.27
 av==12.3.0
 rich==13.9.4
+onnxruntime==1.19.2

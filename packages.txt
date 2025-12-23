@@ -9,5 +9,4 @@ libavdevice-dev
 libavutil-dev
 libswscale-dev
 libavfilter-dev
-libavresample-dev
 python3-dev

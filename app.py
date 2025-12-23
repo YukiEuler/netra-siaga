@@ -802,66 +802,47 @@ def main():
             async_processing=True,
         )
         
-        # Display metrics in real-time
+        # Display status based on WebRTC state (non-blocking)
         if webrtc_ctx.state.playing:
             st.success("✅ Kamera aktif - Deteksi berjalan!")
+            
+            # Metric display columns
+            col1, col2, col3, col4 = st.columns(4)
             
             # Get the current video processor instance
             video_processor = webrtc_ctx.video_processor
             
-            # Metric placeholders
-            col1, col2, col3, col4 = st.columns(4)
-            
-            metric_placeholders = {
-                'focus': col1.empty(),
-                'talking': col2.empty(),
-                'yawning': col3.empty(),
-                'microsleep': col4.empty()
-            }
-            
-            alert_placeholder = st.empty()
-            
-            # Update metrics periodically
-            last_dangerous_state = False
-            audio_playing = False
-            
-            while webrtc_ctx.state.playing:
-                if video_processor and video_processor.last_probabilities is not None:
-                    probabilities = video_processor.last_probabilities
-                    
-                    # Update metrics
-                    metric_placeholders['focus'].metric("🟢 Focus", f"{probabilities[0]*100:.1f}%")
-                    metric_placeholders['talking'].metric("🔵 Talking", f"{probabilities[1]*100:.1f}%")
-                    metric_placeholders['yawning'].metric("🟡 Yawning", f"{probabilities[2]*100:.1f}%")
-                    metric_placeholders['microsleep'].metric("🔴 Microsleep", f"{probabilities[3]*100:.1f}%")
-                    
-                    # Check for dangerous state
-                    prediction = video_processor.last_prediction
-                    is_dangerous = prediction in ['Yawning', 'Microsleep']
-                    
-                    if is_dangerous:
-                        if prediction == 'Yawning':
-                            alert_placeholder.warning("⚠️ **PERINGATAN!** Pengemudi mulai mengantuk (Yawning)")
-                        else:
-                            alert_placeholder.error("🚨 **BAHAYA!** Pengemudi terdeteksi Microsleep!")
-                        
-                        # Play audio if enabled
-                        if not audio_playing and st.session_state.get('audio_enabled', False):
-                            if st.session_state.get('alert_audio_bytes'):
-                                play_audio_autoplay(st.session_state.alert_audio_bytes)
-                                audio_playing = True
-                        
-                        last_dangerous_state = True
-                    else:
-                        # Changed from dangerous to safe
-                        if last_dangerous_state:
-                            alert_placeholder.empty()
-                            if audio_playing:
-                                stop_audio()
-                                audio_playing = False
-                            last_dangerous_state = False
+            if video_processor and video_processor.last_probabilities is not None:
+                probabilities = video_processor.last_probabilities
+                prediction = video_processor.last_prediction
                 
-                time.sleep(0.1)  # Update every 100ms
+                # Display current metrics
+                col1.metric("🟢 Focus", f"{probabilities[0]*100:.1f}%")
+                col2.metric("🔵 Talking", f"{probabilities[1]*100:.1f}%")
+                col3.metric("🟡 Yawning", f"{probabilities[2]*100:.1f}%")
+                col4.metric("🔴 Microsleep", f"{probabilities[3]*100:.1f}%")
+                
+                # Show alert for dangerous states
+                if prediction in ['Yawning', 'Microsleep']:
+                    if prediction == 'Yawning':
+                        st.warning("⚠️ **PERINGATAN!** Pengemudi mulai mengantuk (Yawning)")
+                    else:
+                        st.error("🚨 **BAHAYA!** Pengemudi terdeteksi Microsleep!")
+                    
+                    # Play audio if enabled (one-time trigger per dangerous state)
+                    if st.session_state.get('audio_enabled', False) and st.session_state.get('alert_audio_bytes'):
+                        play_audio_autoplay(st.session_state.alert_audio_bytes)
+            else:
+                # Show placeholders while waiting for first prediction
+                col1.metric("🟢 Focus", "—")
+                col2.metric("🔵 Talking", "—")
+                col3.metric("🟡 Yawning", "—")
+                col4.metric("🔴 Microsleep", "—")
+                st.info("⏳ Mengumpulkan frame untuk prediksi pertama...")
+            
+            # Info about real-time updates
+            st.caption("💡 Prediksi ditampilkan langsung pada video feed. Metrics di atas diperbarui saat halaman di-refresh.")
+        
         else:
             st.info("👆 Klik 'START' pada video player untuk memulai deteksi menggunakan kamera browser Anda")
             st.markdown("""

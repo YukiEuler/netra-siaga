@@ -12,6 +12,7 @@ import base64
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import av
 import threading
+from functools import partial
 
 # Try to import ONNX Runtime
 try:
@@ -787,20 +788,16 @@ def main():
         
         st.markdown("### 📹 Live Camera Feed")
         
-        # Store pipeline and audio in module-level variables BEFORE webrtc_streamer
-        # This avoids session_state access in worker thread
-        _pipeline = st.session_state.pipeline
-        _alert_audio = st.session_state.get('alert_audio_bytes')
-        
-        # Factory function that uses captured variables (not session_state)
-        def create_video_processor():
-            return VideoProcessor(_pipeline, _alert_audio)
-        
+        # Use functools.partial to bind arguments - this avoids session_state in worker thread
         webrtc_ctx = webrtc_streamer(
             key="drowsiness-detection",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=create_video_processor,
+            video_processor_factory=partial(
+                VideoProcessor,
+                pipeline=st.session_state.pipeline,
+                alert_audio_bytes=st.session_state.get('alert_audio_bytes')
+            ),
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )

@@ -8,5 +8,5 @@ Pillow==10.4.0
 numpy==1.26.4
 pandas==2.2.3
 ultralytics==8.2.27
-av==10.0.0
+av==12.3.0
 rich==13.9.4

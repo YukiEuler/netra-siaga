@@ -787,20 +787,19 @@ def main():
         
         st.markdown("### 📹 Live Camera Feed")
         
-        # Create video processor
-        if 'video_processor' not in st.session_state or st.session_state.get('processor_needs_update', False):
-            st.session_state.video_processor = VideoProcessor(
+        # Create video processor factory function
+        def video_processor_factory():
+            return VideoProcessor(
                 st.session_state.pipeline,
                 st.session_state.get('alert_audio_bytes')
             )
-            st.session_state.processor_needs_update = False
         
         # WebRTC streamer
         webrtc_ctx = webrtc_streamer(
             key="drowsiness-detection",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=lambda: st.session_state.video_processor,
+            video_processor_factory=video_processor_factory,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
@@ -808,6 +807,9 @@ def main():
         # Display metrics in real-time
         if webrtc_ctx.state.playing:
             st.success("✅ Kamera aktif - Deteksi berjalan!")
+            
+            # Get the current video processor instance
+            video_processor = webrtc_ctx.video_processor
             
             # Metric placeholders
             col1, col2, col3, col4 = st.columns(4)
@@ -826,8 +828,8 @@ def main():
             audio_playing = False
             
             while webrtc_ctx.state.playing:
-                if st.session_state.video_processor.last_probabilities is not None:
-                    probabilities = st.session_state.video_processor.last_probabilities
+                if video_processor and video_processor.last_probabilities is not None:
+                    probabilities = video_processor.last_probabilities
                     
                     # Update metrics
                     metric_placeholders['focus'].metric("🟢 Focus", f"{probabilities[0]*100:.1f}%")
@@ -836,7 +838,7 @@ def main():
                     metric_placeholders['microsleep'].metric("🔴 Microsleep", f"{probabilities[3]*100:.1f}%")
                     
                     # Check for dangerous state
-                    prediction = st.session_state.video_processor.last_prediction
+                    prediction = video_processor.last_prediction
                     is_dangerous = prediction in ['Yawning', 'Microsleep']
                     
                     if is_dangerous:
